@@ -2,4 +2,4 @@
 
 [Instructions](https://operations.nfl.com/the-game/big-data-bowl/terms-and-conditions/)
 
-[Data downlaod](https://www.kaggle.com/c/nfl-big-data-bowl-2020)
+[Data download](https://www.kaggle.com/c/nfl-big-data-bowl-2020)
