@@ -1,0 +1,651 @@
+---
+title: "NFL Big Data Bowl Sub-Contest"
+author: "Anonymous"
+date: "12/17/2019"
+fontsize: 11pt
+geometry: margin=1in
+output: 
+  pdf_document:
+    number_sections: true
+    fig_width: 10
+    fig_height: 5
+    df_print: kable
+---
+  
+# Introduction 
+
+Modern machine learning algorithms exhibit state-of-the-art predictive performance across an array of applications ranging from health care^[Yu, K., Beam, A.L. & Kohane, I.S. Artificial intelligence in healthcare. Nat Biomed Eng 2, 719–731 (2018) doi:10.1038/s41551-018-0305-z] and bioinformatics^[Zou, J., Huss, M., Abid, A. et al. A primer on deep learning in genomics. Nat Genet 51, 12–18 (2019) doi:10.1038/s41588-018-0295-5] to computer vision^[Athanasios Voulodimos, Nikolaos Doulamis, Anastasios Doulamis, and Eftychios Protopapadakis, “Deep Learning for Computer Vision: A Brief Review,” Computational Intelligence and Neuroscience, vol. 2018, Article ID 7068349, 13 pages, 2018. https://doi.org/10.1155/2018/7068349] and natural language processing^[Young, Tom, et al. "Recent trends in deep learning based natural language processing." ieee Computational intelligenCe magazine 13.3 (2018): 55-75]. One important reason for their success is the ability to learn complex, highly nonlinear functions from an exceedingly large range of function classes. In other words, the analyst need not specify details of the model but the resultant model will still learn a highly accurate predictive function seemingly automatically from the data. The resultant models, however, are difficult for humans to interpret and thus earned the epithet 'black-box'. 
+
+Despite the drawbacks in human interpretability, these methods are a go-to for many analysts regardless of the task at hand. Deep convolutional neural networks (CNNs) are one of the most widely-utilized methods particularly due to the model *learning* distributed feature representations *automatically* from the data and combining these features into the high-performing nonlinear function described above^[LeCun Y., Haffner P., Bottou L., Bengio Y. (1999) Object Recognition with Gradient-Based Learning. In: Shape, Contour and Grouping in Computer Vision. Lecture Notes in Computer Science, vol 1681. Springer, Berlin, Heidelberg]. It is often unclear what these learned features correspond to, or what concepts they represent, since the model is composed of millions of weights combined nonlinearly. This has in turn led to a bevy of techniques being developed to 'peek inside the black box' and thus understand what the model has learned^[For example see Ancona, Marco, et al. "Towards better understanding of gradient-based attribution methods for deep neural networks." arXiv preprint arXiv:1711.06104 (2017)]. 
+
+One approach is to visualize which parts of an input image *excite* (read as: *attain high values*) different parts of the trained model. In the task of discriminating cats versus dogs, a collection of convolutional filters may be interpreted as learning, for instance, a cat ear is pointier than a dog ear. It is by no means trivial to make these interpretations, however the *predictive gains* and *automatic feature extraction* from using such a CNN model, as opposed to a simpler but more interpretable linear model which encodes cat ear pointedness directly, often trumps the *sacrifices in interpretability*. This is referred to as the interpretability-performance trade off and Kaggle competitions are excellent examples. 
+
+But abandonment of interpretability is by no means universally the winner. For instance, doctors may consult a 'black-box' model when determining a patient's best treatment option but ultimately rely upon their expertise to determine best course of action. For the doctor to be successful and avoid malpractice suits they must have a strong mental representation of the patient's current state. In a computational framework, this means they understand which features are important for the predictive task at hand. The doctor's ability to do this effectively stems from their experience and the process of doing so may be referred to as *meaningful feature engineering*; that is to say *the doctor* has learned relevant indicators of patient success as opposed to relying upon *a 'black-box' model* to do so for her. 
+
+Combining domain knowledge through meaningful feature engineering with the predictive performance of machine learning models is often the formula for a winning gameplan^[For example Islam, Sheikh Rabiul, et al. "Infusing domain knowledge in AI-based" black box" models for better explainability with application in bankruptcy prediction." arXiv preprint arXiv:1905.11474 (2019)]. The task of meaningful feature engineering for predicting run success will be the primary focus of my report. For a feature to be meaningful it must capture global associations with yards gained and not be player-specific. In other words, I will only consider features which may generalize to all ball carriers as opposed to individual player-specific features such as, for example, a *Dalvin Cook effect*.
+
+At a high level I follow a basic supervised learning analytic framework. Specifically, I begin with data importing and a brief description of basic formatting, namely getting the raw Next-Gen Stats positional data into a format I can use. I then describe the task of feature engineering and how these are inspired by my extensive Sunday afternoon armchair quarterbacking. I next transition into model fitting and evaluation with a brief focus on model interpretability. I conclude with a discussion on limitations and future directions. 
+
+A markdown and code for full reproducibility is shareable upon request via a private [GitHub repo](www.github.com/mPloenzke/nfl_bigdatabowl_subcontest). This will be made public after the competition deadline.
+
+# Setup
+
+```{r, results='hide', message=FALSE, warning=FALSE, echo=FALSE}
+library(tidyverse)
+library(lubridate)
+library(broom)
+library(magrittr)
+```
+
+I begin by loading the training data and sourcing a functions file. The functions file is available in my [GitHub repo](www.github.com/mPloenzke/nfl_bigdatabowl_subcontest) and contains functions to derive the features and assess the model fit. 
+```{r, results='hide', message=FALSE, warning=FALSE, echo=FALSE}
+set.seed(6034)
+train <- read_csv('nfl-big-data-bowl-2020/train.csv', guess_max = 500000) 
+source('myFunctions.R')
+```
+
+I next clean the data by standardizing player direction, team names, weather, and scoring. The standardization of the tracking data follows the framework provided on the NFL Big Data message boards; namely the offense is always moving from the left-to-right and the player orientation is zeroed to offensive-player-direction left. Future player position is computed using current speed and acceleration with a time duration of $\frac{1}{2}$ seconds. 
+```{r, echo=FALSE}
+cleaned_train <- cleanData(train)
+```
+
+# Feature engineering
+
+Next we need to derive features on all available data. The table below contains descriptions for the non-obvious features. It is worth noting that all features are lagged in the sense that they do not use current play yardage information. 
+
+For example, the variable `CurrentGameSuccessRate` encodes how many successful rushes (Yards gained > one-half yards needed) the possession team has already run in the current game as a fraction of how many total rushes they ran. This is computed using all plays leading up to the current play within a given game but does not consider the current play. Failure to properly lag features would cause leakage from the outcome variable. 
+```{r, echo=FALSE}
+derived_features <- deriveFeatures(cleaned_train, return_long = FALSE)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(kableExtra)
+tibble(Feature= c('Runner_type','DefendersBlocked',
+                  'effectiveDownfieldSpeed','effectiveDownfieldAcceleration',
+                  'effectiveCrossfieldAcceleration','xDistanceTravelled',
+                  'MinimumTacklerYardsAway','MinimumTacklerDistanceAway',
+                  'MinimumTacklerEffectiveDownfieldSpeed','MinimumTacklerEffectiveDownfieldAcceleration',
+                  'MinimumTacklerEffectiveCrossfieldAcceleration','MinimumTacklerXDistanceTravelled',
+                  'UnblockedDefendersYardsAway','UnblockedDefendersDistanceAway',
+                  'DefensiveSD_Yards','DefensiveSD_Dis','S','A','Dis',
+                  'Run_type','cumwinpct','YardsToFirstDown',
+                  'OffensiveScoreDifference','OffensiveScoreBeforePlay',
+                  'MeanRushesPerGame','MeanRunSuccess',
+                  'MeanYardsPerAttempt','MeanYardsPerGame','Within4Mins','LastPlayYards',
+                  'CurrentGameYards','CurrentGameAttempts','CurrentGameSuccessRate','ProgressIntoRunScheme',
+                  'RelativeRunSuccess','OlinemenPushDownField','OffensiveSD_X','OffensiveSD_Y',
+                  'HomeTeamAdvantage'),
+       Description = c('Ball carrier position (RB, QB, WR)',
+                       'Estimated number of defenders engaged in block at handoff',
+                       'Runner speed directed downfield',
+                       'Runner acceleration directed downfield',
+                       'Runner acceleration directed laterally to the line of scrimmage (LOS)',
+                       'Runner distance travelled downfield since handoff',
+                       'Nearest unblocked defender yards downfield from runner',
+                       'Nearest unblocked defender distance from runner',
+                       'Nearest unblocked defender speed attacking LOS',
+                       'Nearest unblocked defender acceleration attacking LOS',
+                       'Nearest unblocked defender acceleration directed laterally to LOS',
+                       'Nearest unblocked defender distance travelled towards LOS since handoff',
+                       'All unblocked defenders mean yards downfield from runner',
+                       'All unblocked defenders mean distance from runner',
+                       'Standard deviation measuring spread of defenders in yards downfield',
+                       'Standard deviation measuring spread of defenders in distance from runner',
+                       'Runner speed',
+                       'Runner acceleration',
+                       'Runner distance',
+                       'Is the run a sweep, off tackle, or dive? Is it field-side or to the boundary?',
+                       'Cumulative team winning percentage prior to the current game',
+                       'Yards to go to a first down',
+                       'Possession team points margin prior to play',
+                       'Possession team points total prior to play',
+                       'Average number of rushes per game prior to the current game, per team',
+                       'Proportion of rushes per team attaining at least one-half the requisite yards',
+                       'Average yards per attempt, per team',
+                       'Average total rush yards per team per game',
+                       'Gameclock is within 4 minutes of a half',
+                       'Last rushing attempt yards gained',
+                       'Running total of current game rush yards',
+                       'Running total of current game rush attempts',
+                       'Running proportion of number of successful rushes to total number of rushes',
+                       'Number of current rushes in game relative to the team average rushes',
+                       'Current game yards per attempt divided by the team average YPA',
+                       'Current play offensive linemen mean push downfield since handoff',
+                       'Current play O-line spread (standard deviation) in the downfield direction',
+                       'Current play O-line spread (standard deviation) in the lateral direction',
+                       'Possession team is home team')) %>%
+  kable() %>%
+  kable_styling(font_size = 6)
+```
+
+## Viewing engineered features
+
+### Sample plays
+
+Next let's randomly sample some plays and check the engineered features. The offense is colored red and is moving left to right. The defense is green and arrows indicate direction. The blue dot signifies ball carrier,  the dashed black lin indicates line of scrimmage (LOS) and the red line denotes the  yards gained. 
+
+Several engineered features are shown for four sample plays. For instance, defenders who are able to make a play on the ball carrier (ie unblocked) are denoted with a green dot while defenders who cannot impact the play, according to my method, are denoted with black dots. The mean of the unblocked defenders is shown with the dashed green line and the defender who is most likely to make the play is denoted with the red dot. Lastly, the offensive linemen drive downfield is denoted with the blue dashed line. The run type (eg boundary power, field inside)  estimated from ball carrier intended direction is provided in the facet header along with the team and ball carrier position.
+
+There are several interesting nuggets to be seen in this figure and collectively they support the claim that the derived features are relevant and highly interpretable. For instance, in the upper left panel (CHI RB: Boundary Outside) the nearest unblocked defender (red dot) appears to end up making the tackle for a loss by maintaining outside leverage against the right tackle. If a casual fan were to look at this play without any derived features overlaid my hunch is that they would pick out the player with the red dot as the most likely tackler. It is satisfying to see that the features agree with intuition.
+
+In the upper right figure (MIA RB: Boundary Power) it appears that the nearest blocker (red dot) gets kick blocked by the left tackle and the ball carrier is able to squeeze through the hole but is met immediately by the unblocked defenders (green dots on linebackers and interior DL). A similar story may be the case for the bottom left panel although here the free safety (furthest right green dot signifying unblocked and ability to make a play on the ball carrier) satisfies his inside-out run support and attacks the ball carrier for a ~8 yards gain. In the final bottom right play we see all of the DBs are out of the play but the linebackers flow to the ball and make the tackle. 
+```{r, fig.height = 10, echo=FALSE}
+samp_plays <- cleaned_train %>% distinct(PlayId) %>% sample_n(4)
+plot_features <- formatPlaysForPlotting(cleaned_train, derived_features)
+plotFeaturizedPlays(plot_features, pull(samp_plays))
+```
+
+### Feature associations with outcome yards. 
+
+The figure below shows the Pearson correlation between the derived features and the outcome variable yards gained. Moderate correlation is observed for many of the features with the sign and relative magnitude agreeing with intuition. For instance, values of ball carrier effective downfield acceleration (`effectiveDownfieldAcceleration`) are positively associated with yards gained. This of course makes sense as runners who are speeding up through a hole after the handoff will have a larger force and momentum and therefore more yards gained on average. 
+
+Similarly, a strongly negatively-correlated feature (`MinimumTacklerXDistanceTravelled`) is the nearest potential tackler's distance travelled upfield towards the runner. In this case, for increasing values of the tackler closing in (strictly in the X-axis direction, ie upfield) relative to the ball carrier at time of handoff, on average the ball carrier will gain fewer yards. This feature captures linebackers, for example, attacking and plugging holes in the O-line.
+
+Interestingly, the last running play yards gained is hardly correlated with the next play yards gained. This may be interpreted as momentum in the run game playing little role in run game success.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+derived_features %>%
+  select_if(is.numeric) %>% 
+  gather('key','value',-Yards) %>%
+  group_by(key) %>%
+  do(mod = cor(.$Yards, .$value,use = 'pairwise.complete.obs')) %>% 
+  ungroup() %>%
+  mutate(mod = unlist(mod)) %>% 
+  ggplot(aes(x=reorder(key,mod), y=mod)) + 
+  geom_bar(stat='identity')+ 
+  theme_bw() + 
+  coord_flip() + 
+  labs(x='', y='Correlation (pearson)', title='Feature association with outcome (run yards)')
+```
+
+Now let's plot the outcome variables yards gained. The distribution is heavily skewed right meaning there's a long tail on the distribution to the larger values of yards gained. To address this deviation from normality I'll be transforming the outcome variable via the log transform.
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+derived_features %>% 
+    ggplot(aes(Yards)) + 
+    geom_histogram(stat='count') +
+    theme_bw() + 
+    labs(x='Yards', title='Distribution of outcome yards')
+```
+
+
+## Build model matrix
+
+Now I'll define the outcome and build the model matrix. I considered both binning the realized yards and also leaving the variable un-transformed. Ultimately the high outlier points (seen in the histogram above) unduly influence the objective function when left un-transformed. Additionally it's not clear where to bin the yards gained, and thus I determined to simply use the log transformed values after shifting the values into the positive domain (I added 20 yards to each value).
+
+We see in the histogram below the effect of logging the values - namely the distribution appears normal (besides the discretization due to rounding of yards to the nearest integer). No longer does the large right tail exist and those outlier points will no longer disproportionately influence the loss.
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+categorical <- FALSE
+transformed <- TRUE
+if (categorical) {
+  model_matrix <- derived_features %>% 
+    select(-DisplayName) %>%
+    mutate(Class = case_when(Yards <= -1 ~ '-1',
+                             -1 < Yards & Yards <= 2 ~ '2',
+                             2 < Yards & Yards <= 5 ~ '5',
+                             5 <  Yards & Yards <= 8 ~ '8',
+                             8 < Yards & Yards <= 12 ~ '12',
+                             12 < Yards ~ '13')) %>% 
+    na.omit() %>%
+    mutate(Class=as.factor(Class))
+  model_matrix %>% 
+    ggplot(aes(Class)) + 
+    geom_histogram(stat='count') + 
+    theme_bw() + 
+    labs(x='Yards binned', title='Distribution of outcome yards')
+} else {
+  if (!transformed) {
+    model_matrix <- derived_features %>% 
+        select(-DisplayName) %>%
+        na.omit() %>%
+        mutate(Class = Yards)
+  } else {
+    model_matrix <- derived_features %>% 
+      select(-DisplayName) %>%
+      na.omit() %>%
+      mutate(Class = log(Yards+20))
+  }
+  model_matrix %>% 
+    ggplot(aes(Class)) + 
+    geom_histogram(stat='count') +
+    theme_bw() + 
+    labs(x='Log(Yards+20)', title='Distribution of transformed outcome yards')
+}
+model_matrix_full <- constructModelMatrix(model_matrix)
+train_games <- train %>% filter(!(Week==17 & Season==2018)) %>% distinct(GameId) %>% pull(GameId)
+test_games <- train %>% filter(Week==17 & Season==2018) %>% distinct(GameId) %>% pull(GameId)
+train_idx <- model_matrix %>% mutate(id = GameId %in% train_games) %>% pull(id)
+test_idx <- model_matrix %>% mutate(id = GameId %in% test_games) %>% pull(id)
+meanss <- colMeans(model_matrix_full,na.rm=TRUE)
+sdss <- apply(model_matrix_full, 2, sd)
+model_matrix_full <- (model_matrix_full - matrix(meanss,
+                                          nrow=nrow(model_matrix_full),
+                                          ncol=ncol(model_matrix_full),
+                                          byrow = TRUE))/matrix(sdss,
+                                          nrow=nrow(model_matrix_full),
+                                          ncol=ncol(model_matrix_full),
+                                          byrow = TRUE)
+namess <- colnames(model_matrix)
+namess <- namess[namess!='Class']
+```
+
+### Empirical distribution for smoothing
+
+Next I calculate the empirical distributions of yards within sliding windows around each value for smoothing the predictions. Specifically I use a five yard window around each yardage, and within each window I calculate the empirical distribution of yards gained. This procedure is a simple way to incorporate uncertainty into my model. 
+
+```{r, echo=FALSE}
+empirical_distributions <- calcEmpiricalBins(model_matrix, binned=categorical, transformed=transformed)
+```
+
+A plot of the empirical bins below shows the yards gained along the x-axis and the transformed yards along the y-axis. Coloring is by the values calculated empirically above. Within each window (horizontal bar for a fixed Y value) the values sum to 1 as they are cumulative distributions. For instance, if the predicted point estimate for the transformed value for a given test set play is 3 (thickest black horizontal line corresponding to a realized yards of 0), then the prediction bin encompasses yards $\in [-2,3]$ and the reported predicted cumulative distribution would be the empirical CDF calculated from all plays which gained between -2 to 3 yards.
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=6,fig.width=8}
+library(viridis)
+empirical_distributions %>%
+  filter(Class>0) %>%
+  filter(Class > min(Class)) %>% 
+  ggplot(aes(x=Yards,y=Class, fill=empirical_distribution)) +
+  theme_bw() + 
+  geom_hline(aes(yintercept=log(20))) + 
+  geom_vline(aes(xintercept=0)) +
+  geom_hline(aes(yintercept=log(20+20)),lty=1,lwd=.2) + 
+  geom_vline(aes(xintercept=20),lty=1,lwd=.2) +
+  geom_hline(aes(yintercept=log(20-10)),lty=1,lwd=.1) + 
+  geom_vline(aes(xintercept=-10),lty=1,lwd=.1) +
+  geom_hline(aes(yintercept=log(20+40)),lty=1,lwd=.1) + 
+  geom_vline(aes(xintercept=40),lty=1,lwd=.1) +
+  geom_hline(aes(yintercept=log(20+60)),lty=1,lwd=.05) + 
+  geom_vline(aes(xintercept=60),lty=1,lwd=.05) +
+  geom_hline(aes(yintercept=log(20+80)),lty=1,lwd=.05) + 
+  geom_vline(aes(xintercept=80),lty=1,lwd=.05) +
+  geom_hline(aes(yintercept=log(20-15)),lty=1,lwd=.05) + 
+  geom_vline(aes(xintercept=-15),lty=1,lwd=.05) +
+  geom_hline(aes(yintercept=1.1),lty=1,lwd=.05) + 
+  geom_vline(aes(xintercept=-20),lty=1,lwd=.05) +
+  geom_tile(aes(height=.1)) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position='bottom') +
+  scale_fill_viridis(name = "Empirical distribution", option = "C", breaks = c(0, .5, 1),alpha=1) +
+  labs(title = 'Yards gained empirical bins to smooth predictions',
+       subtitle = 'Empirical distributions calculated using 5 yard windows',
+       x='Yards gained',y='Log(Yards+20)')  +
+  guides(fill = guide_colourbar(ticks = FALSE, title.position='bottom')) +
+  scale_x_continuous(breaks=seq(-30,100,by=10))
+```
+
+# Train model 
+
+```{r, eval=FALSE, include=FALSE}
+library(caret)
+model_fit <- knnreg(x=model_matrix_full,
+                    y=model_matrix$Class,
+                    k=5)
+```
+
+```{r, eval=FALSE, include=FALSE}
+library(randomForest)
+model_fit <- randomForest(x=model_matrix_full, 
+                          y=model_matrix$Class, 
+                          importance=TRUE,
+                          na.action = na.roughfix, 
+                          ntree=250,
+                          mtry=15)
+```
+
+I'll use gradient boosting machines via the xgboost method^[Chen, Tianqi, and Carlos Guestrin. "Xgboost: A scalable tree boosting system." Proceedings of the 22nd acm sigkdd international conference on knowledge discovery and data mining. ACM, 2016.] to obtain point estimates for each test set observation. Note that the test set is constructed of all 2018 week 17 games. It is critical to set up the test partition split to include entire games, and not allow plays from the same game to exist in both the training and the testing sets. This causes leakage and allows the analyst to overfit their model to the training set while still achieving excellent test set performance. In other words it is trivially easy for a machine learning model to memorize the training data but learning a generalizable function is much more difficult. 
+
+The model boosts 100 regression trees of depth 8 for 1000 iterations with a learning rate of 0.0075, $L_2$ regularization of 0.05 and $L_1$ regulatization of 0.02.
+
+```{r, eval=TRUE, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+library(xgboost)
+if (categorical) {
+  dtrain <- xgb.DMatrix(data = model_matrix_full[train_idx,], label=as.numeric(model_matrix$Class[train_idx])-1)
+  dtest <- xgb.DMatrix(data = model_matrix_full[test_idx,], label=as.numeric(model_matrix$Class[test_idx])-1)
+  model_fit <- xgb.train(data = dtrain, max.depth = 4, colsample_bytree=.75,
+                     eta = .1, nthread = 2, nrounds=50, 
+                     watchlist = list(train=dtrain, test=dtest),
+                     objective = "multi:softmax", num_class=length(levels(model_matrix$Class)))
+  training_preds <- predict(model_fit,newdata=model_matrix_full[train_idx,])
+} else {
+  dtrain <- xgb.DMatrix(data = model_matrix_full[train_idx,], label=model_matrix$Class[train_idx])
+  dtest <- xgb.DMatrix(data = model_matrix_full[test_idx,], label=model_matrix$Class[test_idx])
+  model_fit <- xgb.train(#data = dtrain, booster='gblinear', nrounds=1e4, lambda=.01, feature_selector='greedy', top_k=3,updater='coord_descent',
+    data = dtrain, max.depth = 8, colsample_bytree=.5,eta = .009, nthread = 2, nrounds=1000, min_child_weight=5,subsample=.5,
+    lambda=.05,alpha=.02,num_parallel_trees=100,
+                     watchlist = list(train=dtrain, test=dtest),
+                     objective = "reg:squarederror")
+  training_preds <- predict(model_fit,newdata=model_matrix_full[train_idx,])
+}
+```
+
+# Model diagnostics
+## Variable importance plot.
+```{r, eval=FALSE, include=FALSE}
+varImpPlot(model_fit)
+```
+
+
+```{r, eval=TRUE, echo=FALSE, results='hide'}
+fulltrain <- xgb.DMatrix(data = model_matrix_full, label=model_matrix$Class)
+model_fit_for_features <- xgboost(data = fulltrain, max.depth = model_fit$params$max_depth, 
+                     colsample_bytree=model_fit$params$colsample_bytree,
+                     eta = model_fit$params$eta, 
+                     nthread = model_fit$params$nthread, 
+                     nrounds=model_fit$niter, 
+                     objective = model_fit$params$objective)
+```
+
+Now I'll plot the feature importance from the model fit. Three measures of feature importance are included and while the definitions of each will not be covered in this analysis, it suffices to say that the ordering is what we should focus on and the larger values signify more important features. 
+
+Sorting along the Y-axis indicates that the spatial features are found to be the most important features for the model predictions. Specifically the ball carrier acceleration and nearest defender who is capable of making the tackle make up the majority of the top features. The offensive linemen are also important, as evident by the  large value for the `OffensiveSD_X`, `OffensiveSD_Y`, and `OlinemenPushDownField` features, which capture the spread of the offensive linemen in the X and Y directions and the mean push downfield, respectively. Collectively the engineered features based on my armchair quarterbacking make up nearly 80% of the top 25 most important features.
+```{r, eval=TRUE, echo=FALSE}
+xgb.importance(model=model_fit_for_features) %>% 
+  top_n(n=25,Gain) %>%
+  gather('key','value',-Feature) %>%
+  mutate(Feature = gsub('as.factor\\(','',Feature)) %>%
+  mutate(Feature = gsub('\\)',': ',Feature)) %>%
+  mutate(Feature = gsub('as.logical\\(','',Feature)) %>%
+  ggplot(aes(x=reorder(Feature,value),y=value))+ 
+  geom_bar(stat='identity') + 
+  coord_flip() +
+  theme_bw() + 
+  facet_grid(cols=vars(key), scales='free_y') + 
+  labs(y='Importance', title='Measures of top feature importance for XGBoost model', x='')
+```
+
+For completeness I show the least important features as well in the figure below and note that many of these are formation based (e.g. I FORM, WILDCAT), runner type, and quarter/down information. Note the X-axis scaling is different from that above to highlight the smaller differences.
+```{r, echo=FALSE}
+xgb.importance(model=model_fit_for_features) %>% 
+  top_n(n=-(dim(model_matrix_full)[2]-25),Gain) %>%
+  gather('key','value',-Feature) %>%
+  mutate(Feature = gsub('as.factor\\(','',Feature)) %>%
+  mutate(Feature = gsub('\\)',': ',Feature)) %>%
+  mutate(Feature = gsub('as.logical\\(','',Feature)) %>%
+  ggplot(aes(x=reorder(Feature,value),y=value))+ 
+  geom_bar(stat='identity') + 
+  coord_flip() +
+  theme_bw() + 
+  facet_grid(cols=vars(key), scales='free_y') + 
+  labs(y='Importance', title='Measures of feature importance for remaining features', x='')
+```
+
+## Training set performance 
+
+### Sample plays
+
+Given the trained model we now need to assess the model fit. During the training procedure I used the 2018 week 17 as a validation split as not to contaminate my training set. Here we'll use all the plays from a randomly chosen set of 3 games sampled from the training set. 
+
+The predicted CDF (orange shading) for a single play is provided below. The dashed lines represent the same features described in the earlier section.
+```{r, warning=FALSE, eval=TRUE, echo=FALSE}
+plot_train_plays <- TRUE
+full_preds <- tibble()
+iii <- 0
+for (gameid in sample(train %>% filter(Week<17 & Season==2018) %>% distinct(GameId) %>% pull(),3)) {
+  # format observation and derive features
+  current_train_game <- train %>% filter(GameId==gameid) %>% arrange(Quarter,-GameClock)
+  for (playy in 1:length(unique(current_train_game$PlayId))) {
+    obs <- unique(current_train_game$PlayId)[playy]
+    current_train_play <- derived_features %>% filter(PlayId==obs)
+    realized <- current_train_play %>% select(Yards) %>% distinct() %>% pull()
+    test_df <- current_train_play
+    #temp_cleaned <- cleaned_train %>% 
+    #  mutate(PlayId = as.numeric(as.character(PlayId))) %>%
+    #  filter(Season<unique(current_train_play$Season) | 
+    #                                         ((Season==unique(current_train_play$Season) & 
+    #                                            Week<=unique(current_train_play$Week) &
+    #                                            PlayId<unique(current_train_play$PlayId))))
+    #new_cleaned <- formatTestObservation(current_train_play,temp_cleaned)
+    #test_df <- deriveTestSetFeatures(new_cleaned)
+    yardsfromgoal <- test_df %>% select(YardsFromOwnGoal) %>% distinct() %>% pull()
+    # build model matrix
+    newdat <- suppressWarnings(test_df %>% 
+                                 select(namess) %>% 
+                                 bind_rows(model_matrix %>% 
+                                             select(-Class) %>% 
+                                             filter(PlayId !=obs)))
+    model_matrix_new2 <- constructModelMatrix(newdat)
+    model_matrix_new2 <- (model_matrix_new2 - matrix(meanss,
+                                                     nrow=nrow(model_matrix_new2),
+                                                     ncol=ncol(model_matrix_new2),
+                                                     byrow = TRUE))/matrix(sdss,
+                                                                           nrow=nrow(model_matrix_new2),
+                                                                           ncol=ncol(model_matrix_new2),
+                                                                           byrow = TRUE)
+    model_matrix_new <- model_matrix_new2[1,]
+    # replace any missing columns with the mean
+    #print(paste(sum(is.na(model_matrix_new)),' missing values for observation ',obs,sep=''))
+    model_matrix_new[is.na(model_matrix_new)] <- meanss[is.na(model_matrix_new)]
+    # predict on training play
+    if (class(model_fit) == 'randomForest') {
+      new_pred <- predict(model_fit,newdata=model_matrix_new)
+    } else if (class(model_fit) == 'xgb.Booster') {
+      if (categorical) {
+        new_pred <- levels(model_matrix$Class)[predict(model_fit,newdata=t(as.matrix(model_matrix_new)))+1]
+      } else {
+        new_pred <- predict(model_fit,newdata=t(as.matrix(model_matrix_new)))
+      }
+    } else if (class(model_fit) == 'knnreg') {
+      new_pred <- predict(model_fit, newdata = t(as.matrix(model_matrix_new)))
+    } else {
+      new_pred <- predict(model_fit,newx=t(as.matrix(model_matrix_new)),s=opt_lambda, type='response')[1,1]
+    }
+    new_pred <- transform2CDF(new_pred, empirical_distributions, yardsfromowngoal=yardsfromgoal, 
+                              id = obs, binned=categorical, transformed=transformed) %>% 
+      mutate(Realized_Yards = realized)
+    full_preds <- bind_rows(new_pred, full_preds)
+    # plot training play
+    if (plot_train_plays & iii==0) {
+      #plot_features_new <- suppressWarnings(formatPlaysForPlotting(new_cleaned, test_df, isTestSet =TRUE))
+      plot_features_new <- plot_features %>% filter(PlayId == obs)
+      p <- plotFeaturizedPlays(plot_features_new, obs, new_pred)
+      iii <- 1
+    }
+    #print(plotCdfError(full_preds))
+  }
+}
+```
+
+```{r,eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+p
+```
+
+
+### Error
+The cumulative distribution function (CDF) error for the three training set games sampled above is reported below.
+```{r,eval=TRUE, echo=FALSE}
+training_set_cdf_error <- calcCdfError(full_preds, summarise=TRUE)
+print(paste('Training set CDF error: ',training_set_cdf_error,sep=''))
+```
+  
+### CDF error
+
+A plot of the CDF error for all plays from the sampled games is provided below. I show the yards along the x axis and sort the observations along the y axis by their realized value (red boxes). Each row is a single play and the blue coloring signifies the empirical distribution of yards gained within the 5 yard bin constructed around the predicted point estimate. 
+
+Qualitatively it appears that the model has learned a relevant predictive function (the blue somewhat tracks the red) although it is difficult to accurately predict yards gained for runs which attained more than 10 yards. While there is doubtlessly room for improvement, this model failure is not necessarily shocking when one considers how these runs usually come about: Based on my experience watching football large runs are often the result of a playmaker making a play. This may be in the form of a broken or missed tackle, a nasty juke, or even a stiff arm into the shadow realm ( [hello Derrius Guice](https://redskinswire.usatoday.com/2019/12/02/derrius-guices-nasty-stiff-arm-draws-loads-of-buzz-on-twitter/)). Regardless the cause, this is to say that features calculated *at the time of handoff* will not be predictive of whether a ball carrier makes a play against the would-be tackler. Further, as described in the introduction, the purpose of this analysis is to engineer features which capture global trends in running plays; a better model could surely be fit by incorporating player-specific effects (eg a feature for each team/runner in the model) but that is not the focus of this work.
+```{r,eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+plotCdfError(full_preds)
+```
+
+## Test set performance 
+
+Next I'll repeat the procedure from above for the test set plays. A plot of the predicted CDF for a single test example is shown below with the predicted CDF highlighted in orange. In this example our prediction is spot on (red line lies within the orange shading).
+
+```{r, warning=FALSE, include=FALSE, echo=FALSE, eval=FALSE}
+simulate_big_plays <- FALSE
+plot_test_plays <- TRUE
+test_set_plays <- train %>% filter(Season==2018,Week==17) %>% distinct(PlayId) %>% pull()
+test_preds <- tibble()
+for (obs in test_set_plays) {
+  # format observation and derive features
+  current_test_play <- train %>% filter(PlayId==obs)
+  realized <- current_test_play %>% select(Yards) %>% distinct() %>% pull()
+  new_cleaned <- formatTestObservation(current_test_play,cleaned_train)
+  test_df <- deriveTestSetFeatures(new_cleaned)
+  yardsfromgoal <- test_df %>% select(YardsFromOwnGoal) %>% distinct() %>% pull()
+  # build model matrix
+  newdat <- suppressWarnings(test_df %>% 
+                               select(namess) %>% 
+                               bind_rows(model_matrix %>% 
+                                           select(-Class) %>% 
+                                           filter(PlayId !=obs)))
+  model_matrix_new2 <- constructModelMatrix(newdat)
+  model_matrix_new2 <- (model_matrix_new2 - matrix(meanss,
+                                                   nrow=nrow(model_matrix_new2),
+                                                   ncol=ncol(model_matrix_new2),
+                                                   byrow = TRUE))/matrix(sdss,
+                                                                         nrow=nrow(model_matrix_new2),
+                                                                         ncol=ncol(model_matrix_new2),
+                                                                         byrow = TRUE)
+  model_matrix_new <- model_matrix_new2[1,]
+  # replace any missing columns with the mean
+  #print(paste(sum(is.na(model_matrix_new)),' missing values for observation ',obs,sep=''))
+  model_matrix_new[is.na(model_matrix_new)] <- meanss[is.na(model_matrix_new)]
+  # predict on test play
+  if (class(model_fit) == 'randomForest') {
+    new_pred <- predict(model_fit,newdata=model_matrix_new)
+  } else if (class(model_fit) == 'xgb.Booster') {
+    if (categorical) {
+      new_pred <- levels(model_matrix$Class)[predict(model_fit,newdata=t(as.matrix(model_matrix_new)))+1]
+    } else {
+      new_pred <- predict(model_fit,newdata=t(as.matrix(model_matrix_new)))
+    }
+  } else if (class(model_fit) == 'knnreg') {
+    new_pred <- predict(model_fit, newdata = t(as.matrix(model_matrix_new)))
+  } else {
+    new_pred <- predict(model_fit,newx=t(as.matrix(model_matrix_new)),s=opt_lambda, type='response')[1,1]
+  }
+  if (simulate_big_plays) {
+    second_level_of_defense <- 5
+    blown_block <- 0
+    if ((new_pred >= log(second_level_of_defense+20)) | (new_pred <= log(blown_block+20))) {
+      #diffs1 <- (training_preds[-which(model_matrix$GameId %in% test_games)]-new_pred)^2
+      #diffs2 <- (model_matrix_new2[-1,] - matrix(model_matrix_new,
+      #                                    nrow=nrow(model_matrix_new2[-1,]),
+      #                                    ncol=length(model_matrix_new),
+      #                                   byrow = TRUE))^2 %>%
+      #  rowSums()
+      #diffs <- as.vector(.3*scale(diffs1))# + as.vector(.7*scale(diffs2))
+      #similar_rows <- as.numeric(which(diffs %in% head(sort(diffs),n=1)))
+      #print(paste('old pred: ', round(exp(new_pred)-20), '; new pred: ', round(mean(model_matrix$Yards[similar_rows]))))
+      #new_pred  <- log(round(mean(model_matrix$Yards[similar_rows]))+20)
+      new_pred <- log(10+20)
+      if (new_pred >= log(25+20)) {
+        new_pred <- log(25+20)
+      }
+      new_pred <- transform2CDF(new_pred, empirical_distributions, yardsfromowngoal=yardsfromgoal, 
+                                id = obs, binned=categorical, transformed=transformed) %>% 
+        mutate(Realized_Yards = realized) #%>% 
+      #mutate(empirical_distribution=-empirical_distribution)
+    } else {
+      new_pred <- transform2CDF(new_pred, empirical_distributions, yardsfromowngoal=yardsfromgoal, 
+                                id = obs, binned=categorical, transformed=transformed) %>% 
+        mutate(Realized_Yards = realized)
+    }
+  } else {
+    new_pred <- transform2CDF(new_pred, empirical_distributions, yardsfromowngoal=yardsfromgoal, 
+                              id = obs, binned=categorical, transformed=transformed) %>% 
+      mutate(Realized_Yards = realized)
+  }
+  test_preds <- bind_rows(new_pred, test_preds)
+  # plot test play
+  if (plot_test_plays & runif(1)<0) {
+    plot_features <- suppressWarnings(formatPlaysForPlotting(new_cleaned, test_df, isTestSet =TRUE))
+    print(plotFeaturizedPlays(plot_features, obs, new_pred))
+  }
+  #print(plotCdfError(test_preds))
+}
+```
+
+```{r, warning=FALSE, include=FALSE, echo=FALSE, eval=TRUE}
+plot_train_plays <- TRUE
+test_preds <- tibble()
+iii <- 0
+for (gameid in sample(train %>% filter(Week==17 & Season==2018) %>% distinct(GameId) %>% pull(),16)) {
+  # format observation and derive features
+  current_train_game <- train %>% filter(GameId==gameid) %>% arrange(Quarter,-GameClock)
+  for (playy in 1:length(unique(current_train_game$PlayId))) {
+    obs <- unique(current_train_game$PlayId)[playy]
+    current_train_play <- derived_features %>% filter(PlayId==obs)
+    realized <- current_train_play %>% select(Yards) %>% distinct() %>% pull()
+    test_df <- current_train_play
+    #temp_cleaned <- cleaned_train %>% 
+    #  mutate(PlayId = as.numeric(as.character(PlayId))) %>%
+    #  filter(Season<unique(current_train_play$Season) | 
+    #                                         ((Season==unique(current_train_play$Season) & 
+    #                                            Week<=unique(current_train_play$Week) &
+    #                                            PlayId<unique(current_train_play$PlayId))))
+    #new_cleaned <- formatTestObservation(current_train_play,temp_cleaned)
+    #test_df <- deriveTestSetFeatures(new_cleaned)
+    yardsfromgoal <- test_df %>% select(YardsFromOwnGoal) %>% distinct() %>% pull()
+    # build model matrix
+    newdat <- suppressWarnings(test_df %>% 
+                                 select(namess) %>% 
+                                 bind_rows(model_matrix %>% 
+                                             select(-Class) %>% 
+                                             filter(PlayId !=obs)))
+    model_matrix_new2 <- constructModelMatrix(newdat)
+    model_matrix_new2 <- (model_matrix_new2 - matrix(meanss,
+                                                     nrow=nrow(model_matrix_new2),
+                                                     ncol=ncol(model_matrix_new2),
+                                                     byrow = TRUE))/matrix(sdss,
+                                                                           nrow=nrow(model_matrix_new2),
+                                                                           ncol=ncol(model_matrix_new2),
+                                                                           byrow = TRUE)
+    model_matrix_new <- model_matrix_new2[1,]
+    # replace any missing columns with the mean
+    #print(paste(sum(is.na(model_matrix_new)),' missing values for observation ',obs,sep=''))
+    model_matrix_new[is.na(model_matrix_new)] <- meanss[is.na(model_matrix_new)]
+    # predict on training play
+    if (class(model_fit) == 'randomForest') {
+      new_pred <- predict(model_fit,newdata=model_matrix_new)
+    } else if (class(model_fit) == 'xgb.Booster') {
+      if (categorical) {
+        new_pred <- levels(model_matrix$Class)[predict(model_fit,newdata=t(as.matrix(model_matrix_new)))+1]
+      } else {
+        new_pred <- predict(model_fit,newdata=t(as.matrix(model_matrix_new)))
+      }
+    } else if (class(model_fit) == 'knnreg') {
+      new_pred <- predict(model_fit, newdata = t(as.matrix(model_matrix_new)))
+    } else {
+      new_pred <- predict(model_fit,newx=t(as.matrix(model_matrix_new)),s=opt_lambda, type='response')[1,1]
+    }
+    new_pred <- transform2CDF(new_pred, empirical_distributions, yardsfromowngoal=yardsfromgoal, 
+                              id = obs, binned=categorical, transformed=transformed) %>% 
+      mutate(Realized_Yards = realized)
+    test_preds <- bind_rows(new_pred, test_preds)
+    # plot training play
+    if (plot_train_plays & iii==0) {
+      #plot_features <- suppressWarnings(formatPlaysForPlotting(new_cleaned, test_df, isTestSet =TRUE))
+      plot_features_new <- plot_features %>% filter(PlayId == obs)
+      p <- plotFeaturizedPlays(plot_features_new, obs, new_pred)
+      iii <- 1
+    }
+  }
+}
+```
+
+```{r,eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+p
+```
+
+### Error
+The cumulative distribution function (CDF) error for the entire testing set (week 17 of the 2018 season) is reported below. The model fit on the test set performs worse than on the training set indicating some degree of overfitting. While this could be remedied through more time spent on parameter tuning, I reiterate that the purpose of this report is not attaining the best predictive performance but instead is an investigation into engineering relevant and interpretable features for predicting run yards. The advantage of tackling the problem in this latter manner is that football fans understand these features and can use their intuition to further refine them as opposed to using a complex black-box model which may automatically extract features, such as a CNN, without the ability to incorporate domain knowledge.
+
+```{r, echo=FALSE}
+testing_set_cdf_error <- calcCdfError(test_preds, summarise=TRUE)
+print(paste('Testing set CDF error: ',testing_set_cdf_error,sep=''))
+```
+
+### CDF
+
+The by-play error is provided below for the test set. Again the x axis represents yards, the red boxes are the realized values, and the blue shading is the predicted CDF. The poorer test set performance is evident, especially for plays gaining a larger amount of yards.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+plotCdfError(test_preds)
+```
+
+
+# Discussion
+
+This report investigates relevant feature engineering in the space of predicting running play yards gained given NFL Next Gen Stats at time of handoff. In particular I focus on crafting features which generalize across all ball carriers (global features) as opposed to player-specific features, such as a *Lamar Jackson effect*. Inclusion of these latter features may make the trained model more prone to overfitting whereas the former feature types hold potential to generalize across all levels of football, teams, and styles of play. Indeed, it is through these generalizable features from which we as domain experts may interpret relevant effects and leverage model findings to "take it to the house" on offense or "bottle up the run" on defense. 
+
+Despite predictive performance lagging behind the top performing models submitted to the first-round competition, these hand-crafted features incorporate domain knowledge and tend to agree with football intuition. Undoubtedly improvements may be made to the model which could improve predictive performance however this often comes at the cost of model interpretability, thus providing a rather clear example of the interpretability-performance trade off.
